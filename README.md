@@ -136,6 +136,19 @@ Notes:
 - Skips missing/all-zero embeddings automatically.
 - Uses deterministic UUID point IDs derived from `face` doc IDs for idempotent re-runs.
 
+### Probe Vector Retrieval Quality
+
+After setup + sync, run a quick self-match probe against Qdrant:
+
+```bash
+npm run qdrant:probe -- --eventId hackothsava-2k26 --sample 10 --top 10 --minScore 0.9
+```
+
+It reports:
+
+- `selfMatchRate`: how often the source face appears in top-k.
+- `topScoreAboveMinRate`: how often top score clears your threshold.
+
 ### Deployment Setup (Index Worker)
 
 You have two common production patterns:

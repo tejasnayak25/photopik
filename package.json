@@ -11,7 +11,8 @@
     "reembed:apply": "node scripts/reembed_faces.js --apply",
     "index:worker": "node scripts/run_index_worker.js",
     "qdrant:setup": "node scripts/setup_qdrant.js",
-    "qdrant:sync": "node scripts/sync_faces_to_qdrant.js --dry-run"
+    "qdrant:sync": "node scripts/sync_faces_to_qdrant.js --dry-run",
+    "qdrant:probe": "node scripts/probe_vector_search.js"
   },
   "dependencies": {
     "@gradio/client": "^2.2.0",
