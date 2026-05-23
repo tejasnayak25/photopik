@@ -115,9 +115,12 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: 'No face detected in the selfie. Please ensure your face is clearly visible.' })
     }
 
-    // Use the first face detected in the selfie
-    const selfieEmbedding = faces[0].embedding
-    if (!selfieEmbedding) {
+    // Use every detected face in the selfie as a query source.
+    const selfieEmbeddings = faces
+      .map((face, index) => ({ embedding: face.embedding, index }))
+      .filter(item => Array.isArray(item.embedding) && item.embedding.length > 0)
+
+    if (selfieEmbeddings.length === 0) {
       return res.status(400).json({ error: 'Biometric embedding missing from AI response. Please update the Space\'s gradio_app.py file to expose the "embedding" key instead of "embedding_len".' })
     }
 
@@ -127,14 +130,26 @@ export default async function handler(req, res) {
 
     facesSnap.forEach(doc => {
       const data = doc.data()
-      const score = cosine(selfieEmbedding, data.embedding)
+
+      let bestScore = -1
+      let bestQueryFaceIndex = -1
+
+      for (const queryFace of selfieEmbeddings) {
+        const score = cosine(queryFace.embedding, data.embedding)
+        if (score > bestScore) {
+          bestScore = score
+          bestQueryFaceIndex = queryFace.index
+        }
+      }
+
       // Only include results that meet a minimum confidence threshold
-      if (score >= 0.35) {
+      if (bestScore >= 0.35) {
         results.push({
           faceId: doc.id,
           imageId: data.imageId,
-          score,
-          bbox: data.bbox || null
+          score: bestScore,
+          bbox: data.bbox || null,
+          matchedQueryFaceIndex: bestQueryFaceIndex,
         })
       }
     })
