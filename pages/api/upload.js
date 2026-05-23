@@ -1,11 +1,9 @@
 import { IncomingForm } from 'formidable'
 import fs from 'fs'
-import { google } from 'googleapis'
 import admin from 'firebase-admin'
 import driveQueue from '../../lib/driveQueue'
-import FormData from 'form-data'
-import fetch from 'node-fetch'
 import { getDriveClient, loadServiceAccount } from '../../lib/googleDrive'
+import { processImageIndexJob } from '../../lib/faceIndexing'
 
 export const config = {
   api: {
@@ -14,17 +12,6 @@ export const config = {
 }
 
 
-
-async function uploadToDrive(drive, file, name, mimeType) {
-  const filePath = file?.filepath || file?.path
-  const res = await drive.files.create({
-    requestBody: { name, mimeType },
-    media: { mimeType, body: fs.createReadStream(filePath) },
-    fields: 'id',
-    supportsAllDrives: true,
-  })
-  return res.data.id
-}
 
 async function uploadToDriveInFolder(drive, file, name, mimeType, folderId) {
   const filePath = file?.filepath || file?.path
@@ -233,67 +220,79 @@ export default async function handler(req, res) {
 
     const docRef = await db.collection('images').add(imageDoc)
 
-    // If HF Space configured, send derivative (or original) to HF /process endpoint via Gradio
+    // Face indexing: async queue by default for faster upload response.
     const HF_SPACE_URL = process.env.HF_SPACE_URL
+    const asyncIndexingEnabled = process.env.INDEX_ASYNC_UPLOAD !== 'false'
+    const embeddingVersion = process.env.EMBEDDING_VERSION || 'v2'
+    let indexJobId = null
+
     if (HF_SPACE_URL) {
-      try {
-        const fileIdToUse = derivativeId || originalId
-        // download file from Drive into buffer
-        const driveRes = await drive.files.get({ fileId: fileIdToUse, alt: 'media', supportsAllDrives: true }, { responseType: 'stream' })
-        const chunks = []
-        await new Promise((resolve, reject) => {
-          driveRes.data.on('data', (chunk) => chunks.push(chunk))
-          driveRes.data.on('end', resolve)
-          driveRes.data.on('error', reject)
+      const driveFileIdForIndex = derivativeId || originalId
+      const mimeTypeForIndex = derivative?.mimetype || original?.mimetype || 'image/jpeg'
+
+      await db.collection('images').doc(docRef.id).set(
+        {
+          indexingStatus: asyncIndexingEnabled ? 'pending' : 'processing',
+          embeddingVersion,
+          indexedFaceCount: 0,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      )
+
+      if (asyncIndexingEnabled) {
+        const jobRef = await db.collection('indexJobs').add({
+          imageId: docRef.id,
+          eventId: eventIdField,
+          driveFileId: driveFileIdForIndex,
+          mimeType: mimeTypeForIndex,
+          embeddingVersion,
+          status: 'pending',
+          attempts: 0,
+          maxAttempts: 5,
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          nextAttemptAt: null,
+          lastError: null,
         })
-        const buffer = Buffer.concat(chunks)
-        const mimeType = derivative ? derivative.mimetype : original.mimetype
-        const blob = new Blob([buffer], { type: mimeType })
-
-        console.log("Connecting to Gradio Space for face embedding...");
-        const { Client } = await import('@gradio/client')
-        const client = await Client.connect(HF_SPACE_URL)
-        const result = await client.predict("/process", {
-          image: blob
-        })
-
-        const faces = result.data[1] || []
-        console.log(`Detected ${faces.length} face(s) from Space.`);
-
-        for (const item of faces) {
-          const emb = item.embedding
-          const bbox = item.bbox || null
-
-          // Validate embedding exists and is not an all-zero vector.
-          if (!emb || !Array.isArray(emb) || emb.length === 0) {
-            console.warn("WARNING: Face detected but 'embedding' array is missing from Space response. Please update your Space's gradio_app.py to return the actual embedding array.");
-            continue;
-          }
-
-          // Detect all-zero embeddings which commonly indicate the model wasn't loaded
-          // or an error occurred during embedding generation.
-          const allZero = emb.every((v) => Number(v) === 0)
-          if (allZero) {
-            console.warn("WARNING: Face embedding is all zeros — embedding model may be missing or failed. Skipping storing this face.");
-            continue;
-          }
-
-          const faceDoc = {
+        indexJobId = jobRef.id
+      } else {
+        try {
+          await processImageIndexJob({
+            db,
+            admin,
+            drive,
             imageId: docRef.id,
             eventId: eventIdField,
-            embedding: emb,
-            bbox: bbox,
-            createdAt: admin.firestore.FieldValue.serverTimestamp(),
-            embeddingVersion: 'v1'
-          }
-          await db.collection('faces').add(faceDoc)
+            driveFileId: driveFileIdForIndex,
+            mimeType: mimeTypeForIndex,
+            embeddingVersion,
+            hfSpaceUrl: HF_SPACE_URL,
+          })
+        } catch (hfErr) {
+          console.error('HF processing error', hfErr)
+          await db.collection('images').doc(docRef.id).set(
+            {
+              indexingStatus: 'failed',
+              indexingLastError: hfErr.message,
+              updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+            },
+            { merge: true }
+          )
         }
-      } catch (hfErr) {
-        console.error('HF processing error', hfErr)
       }
     }
 
-    return res.status(200).json({ success: true, imageId: docRef.id, driveFileId: originalId })
+    return res.status(200).json({
+      success: true,
+      imageId: docRef.id,
+      driveFileId: originalId,
+      indexing: {
+        mode: HF_SPACE_URL ? (asyncIndexingEnabled ? 'async' : 'sync') : 'disabled',
+        status: HF_SPACE_URL ? (asyncIndexingEnabled ? 'pending' : 'processing') : 'disabled',
+        jobId: indexJobId,
+      },
+    })
   } catch (err) {
     console.error('upload error', err)
     return res.status(500).json({ error: err.message })

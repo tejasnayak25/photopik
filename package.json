@@ -6,7 +6,12 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint . --ext .js,.jsx,.ts,.tsx"
+    "lint": "eslint . --ext .js,.jsx,.ts,.tsx",
+    "reembed:dry": "node scripts/reembed_faces.js --dry-run",
+    "reembed:apply": "node scripts/reembed_faces.js --apply",
+    "index:worker": "node scripts/run_index_worker.js",
+    "qdrant:setup": "node scripts/setup_qdrant.js",
+    "qdrant:sync": "node scripts/sync_faces_to_qdrant.js --dry-run"
   },
   "dependencies": {
     "@gradio/client": "^2.2.0",

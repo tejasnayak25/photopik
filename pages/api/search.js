@@ -1,5 +1,6 @@
 import admin from 'firebase-admin'
 import fs from 'fs'
+import { isVectorSearchEnabled, searchFacesByEmbedding } from '../../lib/vectorSearch'
 
 function loadServiceAccount() {
   const raw = process.env.GOOGLE_SERVICE_ACCOUNT_JSON || ''
@@ -57,19 +58,35 @@ export default async function handler(req, res) {
       return res.status(404).json({ error: `Event '${eventId}' not found.` })
     }
 
+    const queryEmbedding = Array.isArray(embedding) ? embedding : JSON.parse(embedding)
+
+    if (isVectorSearchEnabled()) {
+      const vectorRes = await searchFacesByEmbedding({
+        eventId,
+        embedding: queryEmbedding,
+        topK,
+      })
+      return res.status(200).json({
+        backend: 'vector',
+        results: vectorRes.results,
+      })
+    }
+
     const facesSnap = await db.collection('faces').where('eventId', '==', eventId).limit(limit).get()
     const results = []
-    const queryEmbedding = Array.isArray(embedding) ? embedding : JSON.parse(embedding)
-    facesSnap.forEach(doc => {
+    facesSnap.forEach((doc) => {
       const data = doc.data()
       const score = cosine(queryEmbedding, data.embedding)
       if (score !== -1) {
         results.push({ faceId: doc.id, imageId: data.imageId, score })
       }
     })
-    results.sort((a,b)=>b.score - a.score)
+    results.sort((a, b) => b.score - a.score)
     const top = results.slice(0, topK)
-    return res.status(200).json({ results: top })
+    return res.status(200).json({
+      backend: 'firestore-bruteforce',
+      results: top,
+    })
   } catch (err) {
     console.error('search error', err)
     return res.status(500).json({ error: err.message })

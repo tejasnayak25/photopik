@@ -1,6 +1,7 @@
 import { IncomingForm } from 'formidable'
 import fs from 'fs'
 import admin from 'firebase-admin'
+import { isVectorSearchEnabled, searchFacesByManyEmbeddings } from '../../lib/vectorSearch'
 
 export const config = {
   api: {
@@ -124,35 +125,47 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: 'Biometric embedding missing from AI response. Please update the Space\'s gradio_app.py file to expose the "embedding" key instead of "embedding_len".' })
     }
 
-    // 3. Scan Firestore faces for event and calculate cosine similarity
-    const facesSnap = await db.collection('faces').where('eventId', '==', eventIdField).limit(3000).get()
     const results = []
+    const minScore = 0.35
 
-    facesSnap.forEach(doc => {
-      const data = doc.data()
+    if (isVectorSearchEnabled()) {
+      const vectorRes = await searchFacesByManyEmbeddings({
+        eventId: eventIdField,
+        queryEmbeddings: selfieEmbeddings,
+        topKPerEmbedding: 50,
+        minScore,
+      })
+      results.push(...vectorRes.results)
+    } else {
+      // 3. Scan Firestore faces for event and calculate cosine similarity
+      const facesSnap = await db.collection('faces').where('eventId', '==', eventIdField).limit(3000).get()
 
-      let bestScore = -1
-      let bestQueryFaceIndex = -1
+      facesSnap.forEach((doc) => {
+        const data = doc.data()
 
-      for (const queryFace of selfieEmbeddings) {
-        const score = cosine(queryFace.embedding, data.embedding)
-        if (score > bestScore) {
-          bestScore = score
-          bestQueryFaceIndex = queryFace.index
+        let bestScore = -1
+        let bestQueryFaceIndex = -1
+
+        for (const queryFace of selfieEmbeddings) {
+          const score = cosine(queryFace.embedding, data.embedding)
+          if (score > bestScore) {
+            bestScore = score
+            bestQueryFaceIndex = queryFace.index
+          }
         }
-      }
 
-      // Only include results that meet a minimum confidence threshold
-      if (bestScore >= 0.35) {
-        results.push({
-          faceId: doc.id,
-          imageId: data.imageId,
-          score: bestScore,
-          bbox: data.bbox || null,
-          matchedQueryFaceIndex: bestQueryFaceIndex,
-        })
-      }
-    })
+        // Only include results that meet a minimum confidence threshold
+        if (bestScore >= minScore) {
+          results.push({
+            faceId: doc.id,
+            imageId: data.imageId,
+            score: bestScore,
+            bbox: data.bbox || null,
+            matchedQueryFaceIndex: bestQueryFaceIndex,
+          })
+        }
+      })
+    }
 
     // Sort by cosine similarity score descending
     results.sort((a, b) => b.score - a.score)
@@ -166,7 +179,10 @@ export default async function handler(req, res) {
     }
     const finalResults = Array.from(uniqueImagesMap.values()).slice(0, 30)
 
-    return res.status(200).json({ results: finalResults })
+    return res.status(200).json({
+      backend: isVectorSearchEnabled() ? 'vector' : 'firestore-bruteforce',
+      results: finalResults,
+    })
   } catch (err) {
     console.error('Selfie search error', err)
     return res.status(500).json({ error: err.message })
