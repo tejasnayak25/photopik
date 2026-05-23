@@ -2,7 +2,7 @@
 	"crons": [
 		{
 			"path": "/api/index/worker?limit=30",
-			"schedule": "*/1 * * * *"
+			"schedule": "0 0 * * *"
 		}
 	]
 }

@@ -172,11 +172,13 @@ You have two common production patterns:
 	"crons": [
 		{
 			"path": "/api/index/worker?limit=30",
-			"schedule": "*/1 * * * *"
+			"schedule": "0 0 * * *"
 		}
 	]
 }
 ```
+
+`0 0 * * *` is Hobby-safe (once per day). If you need minute-level processing (`*/1 * * * *`), use Vercel Pro or Option B below.
 
 Vercel includes `Authorization: Bearer $CRON_SECRET` automatically. The worker accepts either `INDEX_WORKER_SECRET` or `CRON_SECRET`.
 
