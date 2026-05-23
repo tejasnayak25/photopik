@@ -4,6 +4,7 @@ import admin from 'firebase-admin'
 import driveQueue from '../../lib/driveQueue'
 import { getDriveClient, loadServiceAccount } from '../../lib/googleDrive'
 import { processImageIndexJob } from '../../lib/faceIndexing'
+import { isVectorSearchEnabled } from '../../lib/vectorSearch'
 
 export const config = {
   api: {
@@ -227,6 +228,12 @@ export default async function handler(req, res) {
     let indexJobId = null
 
     if (HF_SPACE_URL) {
+      if (!isVectorSearchEnabled()) {
+        return res.status(500).json({
+          error: 'Qdrant is required for indexing. Set QDRANT_URL (and optional QDRANT_API_KEY/QDRANT_COLLECTION).',
+        })
+      }
+
       const driveFileIdForIndex = derivativeId || originalId
       const mimeTypeForIndex = derivative?.mimetype || original?.mimetype || 'image/jpeg'
 

@@ -15,6 +15,8 @@ const path = require('path')
 const admin = require('firebase-admin')
 const { google } = require('googleapis')
 const { Client } = require('@gradio/client')
+const fetch = require('node-fetch')
+const { createHash } = require('crypto')
 
 function loadLocalEnv() {
   // Next.js auto-loads env files for API routes, but standalone node scripts do not.
@@ -144,6 +146,81 @@ function isUsableEmbedding(emb) {
   return !emb.every((v) => Number(v) === 0)
 }
 
+function getQdrantConfig() {
+  const url = process.env.QDRANT_URL
+  if (!url) throw new Error('QDRANT_URL env required')
+  return {
+    url: url.replace(/\/$/, ''),
+    apiKey: process.env.QDRANT_API_KEY || null,
+    collection: process.env.QDRANT_COLLECTION || 'photopik_faces',
+  }
+}
+
+async function qdrantRequest(config, { method, pathName, body }) {
+  const headers = { 'content-type': 'application/json' }
+  if (config.apiKey) headers['api-key'] = config.apiKey
+
+  const response = await fetch(`${config.url}${pathName}`, {
+    method,
+    headers,
+    body: body ? JSON.stringify(body) : undefined,
+  })
+  const payload = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    throw new Error(`Qdrant ${method} ${pathName} failed (${response.status}): ${JSON.stringify(payload)}`)
+  }
+  return payload
+}
+
+function toQdrantPointId(rawId) {
+  const input = String(rawId || '')
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(input)) {
+    return input
+  }
+  const rawHex = createHash('sha256').update(input).digest('hex').slice(0, 32)
+  const withVersion = `${rawHex.slice(0, 12)}4${rawHex.slice(13)}`
+  const variantNibble = ((parseInt(withVersion[16], 16) & 0x3) | 0x8).toString(16)
+  const withVariant = `${withVersion.slice(0, 16)}${variantNibble}${withVersion.slice(17)}`
+  return `${withVariant.slice(0, 8)}-${withVariant.slice(8, 12)}-${withVariant.slice(12, 16)}-${withVariant.slice(16, 20)}-${withVariant.slice(20, 32)}`
+}
+
+async function upsertImageFacesToQdrant(config, { eventId, imageId, rows }) {
+  if (!rows.length) return 0
+
+  await qdrantRequest(config, {
+    method: 'POST',
+    pathName: `/collections/${config.collection}/points/delete`,
+    body: {
+      filter: {
+        must: [
+          { key: 'eventId', match: { value: eventId } },
+          { key: 'imageId', match: { value: imageId } },
+        ],
+      },
+    },
+  })
+
+  const points = rows.map((row) => ({
+    id: toQdrantPointId(row.faceId),
+    vector: row.embedding,
+    payload: {
+      faceId: row.faceId,
+      eventId,
+      imageId,
+      bbox: row.bbox || null,
+      embeddingVersion: row.embeddingVersion || null,
+    },
+  }))
+
+  await qdrantRequest(config, {
+    method: 'PUT',
+    pathName: `/collections/${config.collection}/points`,
+    body: { points },
+  })
+
+  return points.length
+}
+
 async function downloadFileBuffer(drive, fileId) {
   const driveRes = await drive.files.get(
     { fileId, alt: 'media', supportsAllDrives: true },
@@ -163,6 +240,7 @@ async function run() {
   const args = parseArgs(process.argv.slice(2))
   const HF_SPACE_URL = process.env.HF_SPACE_URL
   if (!HF_SPACE_URL) throw new Error('HF_SPACE_URL env required')
+  const qdrant = getQdrantConfig()
 
   const serviceAccount = loadServiceAccount()
   if (!admin.apps.length) {
@@ -235,6 +313,7 @@ async function run() {
   let deletedFaces = 0
   let insertedFaces = 0
   let skippedFaces = 0
+  let qdrantUpserted = 0
 
   const docs = imagesSnap.docs
   let cursor = 0
@@ -287,6 +366,7 @@ async function run() {
       // Replace existing face embeddings for this image atomically per image.
       const existingSnap = await db.collection('faces').where('imageId', '==', imageId).get()
       const batch = db.batch()
+      const insertedRows = []
       existingSnap.forEach((doc) => {
         batch.delete(doc.ref)
         deletedFaces += 1
@@ -302,9 +382,24 @@ async function run() {
           embeddingVersion: args.embeddingVersion,
           reembeddedAt: admin.firestore.FieldValue.serverTimestamp(),
         })
+        insertedRows.push({
+          faceId: ref.id,
+          imageId,
+          eventId,
+          embedding: item.emb,
+          bbox: item.bbox,
+          embeddingVersion: args.embeddingVersion,
+        })
         insertedFaces += 1
       }
       await batch.commit()
+
+      const upserted = await upsertImageFacesToQdrant(qdrant, {
+        eventId,
+        imageId,
+        rows: insertedRows,
+      })
+      qdrantUpserted += upserted
       console.log(`[reembed] updated image=${imageId} deleted=${existingSnap.size} inserted=${usable.length}`)
       processedImages += 1
       if (args.resume) {
@@ -343,6 +438,7 @@ async function run() {
   console.log(`deletedFaces=${deletedFaces}`)
   console.log(`insertedFaces=${insertedFaces}`)
   console.log(`skippedFaces=${skippedFaces}`)
+  console.log(`qdrantUpserted=${qdrantUpserted}`)
   if (args.resume) {
     console.log(`checkpointFile=${checkpointPath}`)
     console.log(`checkpointProcessedImages=${processedSet.size}`)

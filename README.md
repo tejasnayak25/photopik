@@ -36,6 +36,9 @@ Required environment variables:
 
 - `HF_SPACE_URL`
 - `GOOGLE_SERVICE_ACCOUNT_JSON` (raw JSON string or path)
+- `QDRANT_URL` (Qdrant is primary for search/index)
+- `QDRANT_API_KEY` (if your Qdrant deployment requires auth)
+- `QDRANT_COLLECTION` (optional, default `photopik_faces`)
 - Optional Drive OAuth flow: `GOOGLE_REFRESH_TOKEN`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`
 
 ## Async Face Indexing Queue
@@ -65,14 +68,14 @@ Worker endpoint (for external schedulers):
 
 Queue health is available in `GET /api/metrics` under `indexQueue`.
 
-## Optional Vector Search Backend (Qdrant)
+## Vector Search Backend (Qdrant, Primary)
 
 Search APIs can use Qdrant for faster similarity lookup:
 
 - `POST /api/search`
 - `POST /api/search-by-selfie`
 
-When configured, responses include `backend: "vector"`; otherwise they fallback to Firestore brute-force.
+Search endpoints are Qdrant-only and return `503` when Qdrant is not configured.
 
 ### Environment Variables
 
@@ -83,7 +86,8 @@ When configured, responses include `backend: "vector"`; otherwise they fallback 
 ### Rollout Notes
 
 - New/updated images indexed through the async worker are automatically synced to Qdrant.
-- If you already have historical faces, run re-embedding/indexing workflows so vectors are populated before switching fully to vector search.
+- Re-embedding apply mode updates Firestore faces and also upserts Qdrant points.
+- If you already have historical faces, run re-embedding or sync workflows so vectors are populated.
 
 ### One-Command Qdrant Setup
 

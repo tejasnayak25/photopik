@@ -22,24 +22,14 @@ function loadServiceAccount() {
   }
 }
 
-function cosine(a, b) {
-  if (!a || !b || a.length !== b.length) return -1
-  let dot = 0
-  let na = 0
-  let nb = 0
-  for (let i = 0; i < a.length; i++) {
-    const va = Number(a[i])
-    const vb = Number(b[i])
-    dot += va * vb
-    na += va * va
-    nb += vb * vb
-  }
-  if (na === 0 || nb === 0) return -1
-  return dot / (Math.sqrt(na) * Math.sqrt(nb))
-}
-
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).end()
+
+  if (!isVectorSearchEnabled()) {
+    return res.status(503).json({
+      error: 'Vector search is required. Set QDRANT_URL (and optional QDRANT_API_KEY/QDRANT_COLLECTION).',
+    })
+  }
 
   const form = new IncomingForm({
     maxFileSize: 10 * 1024 * 1024, // 10MB
@@ -125,47 +115,15 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: 'Biometric embedding missing from AI response. Please update the Space\'s gradio_app.py file to expose the "embedding" key instead of "embedding_len".' })
     }
 
-    const results = []
     const minScore = 0.35
 
-    if (isVectorSearchEnabled()) {
-      const vectorRes = await searchFacesByManyEmbeddings({
-        eventId: eventIdField,
-        queryEmbeddings: selfieEmbeddings,
-        topKPerEmbedding: 50,
-        minScore,
-      })
-      results.push(...vectorRes.results)
-    } else {
-      // 3. Scan Firestore faces for event and calculate cosine similarity
-      const facesSnap = await db.collection('faces').where('eventId', '==', eventIdField).limit(3000).get()
-
-      facesSnap.forEach((doc) => {
-        const data = doc.data()
-
-        let bestScore = -1
-        let bestQueryFaceIndex = -1
-
-        for (const queryFace of selfieEmbeddings) {
-          const score = cosine(queryFace.embedding, data.embedding)
-          if (score > bestScore) {
-            bestScore = score
-            bestQueryFaceIndex = queryFace.index
-          }
-        }
-
-        // Only include results that meet a minimum confidence threshold
-        if (bestScore >= minScore) {
-          results.push({
-            faceId: doc.id,
-            imageId: data.imageId,
-            score: bestScore,
-            bbox: data.bbox || null,
-            matchedQueryFaceIndex: bestQueryFaceIndex,
-          })
-        }
-      })
-    }
+    const vectorRes = await searchFacesByManyEmbeddings({
+      eventId: eventIdField,
+      queryEmbeddings: selfieEmbeddings,
+      topKPerEmbedding: 50,
+      minScore,
+    })
+    const results = vectorRes.results
 
     // Sort by cosine similarity score descending
     results.sort((a, b) => b.score - a.score)
@@ -180,7 +138,7 @@ export default async function handler(req, res) {
     const finalResults = Array.from(uniqueImagesMap.values()).slice(0, 30)
 
     return res.status(200).json({
-      backend: isVectorSearchEnabled() ? 'vector' : 'firestore-bruteforce',
+      backend: 'vector',
       results: finalResults,
     })
   } catch (err) {
