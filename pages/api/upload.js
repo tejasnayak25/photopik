@@ -264,8 +264,17 @@ export default async function handler(req, res) {
           const emb = item.embedding
           const bbox = item.bbox || null
 
-          if (!emb) {
+          // Validate embedding exists and is not an all-zero vector.
+          if (!emb || !Array.isArray(emb) || emb.length === 0) {
             console.warn("WARNING: Face detected but 'embedding' array is missing from Space response. Please update your Space's gradio_app.py to return the actual embedding array.");
+            continue;
+          }
+
+          // Detect all-zero embeddings which commonly indicate the model wasn't loaded
+          // or an error occurred during embedding generation.
+          const allZero = emb.every((v) => Number(v) === 0)
+          if (allZero) {
+            console.warn("WARNING: Face embedding is all zeros — embedding model may be missing or failed. Skipping storing this face.");
             continue;
           }
 
