@@ -373,10 +373,10 @@ async function run() {
       })
       for (const item of usable) {
         const ref = db.collection('faces').doc()
+        // Persist metadata only; do not store embeddings in Firestore.
         batch.set(ref, {
           imageId,
           eventId,
-          embedding: item.emb,
           bbox: item.bbox,
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
           embeddingVersion: args.embeddingVersion,

@@ -103,6 +103,28 @@ This creates/validates:
 - Vector config: size `512`, distance `Cosine`
 - Payload indexes: `eventId`, `imageId`, `embeddingVersion`
 
+## Qdrant-primary migration
+
+We now use Qdrant as the canonical vector store and keep only lightweight metadata in Firestore (`images`, `events`, `faces` metadata).
+
+To migrate existing data (compute embeddings and upsert to Qdrant), run the migration script which re-uses the same indexing flow used on upload:
+
+```bash
+# Dry-run to preview work (no writes)
+node scripts/migrate_images_to_qdrant.js --dry-run --eventId wedding-2026 --limit 50
+
+# Apply: compute embeddings, write face metadata, upsert vectors to Qdrant
+node scripts/migrate_images_to_qdrant.js --apply --eventId wedding-2026 --limit 200
+
+# Resume a large job using checkpointing
+node scripts/migrate_images_to_qdrant.js --apply --resume --checkpointFile .migrate_checkpoint.json
+```
+
+Notes:
+- `scripts/reembed_faces.js` also performs re-embedding per-image and upserts to Qdrant; use whichever script matches your workflow.
+- The old `faces` documents no longer store raw embeddings; the `faces` collection contains metadata (imageId, bbox, embeddingVersion) for traceability and re-embedding.
+- Ensure `QDRANT_URL` and `HF_SPACE_URL` are set in your environment before running apply.
+
 Optional overrides:
 
 ```bash
