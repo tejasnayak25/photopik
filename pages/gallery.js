@@ -25,6 +25,19 @@ export default function GalleryPage() {
     }
   }, [])
 
+  // Attach the stream after the video element is mounted.
+  useEffect(() => {
+    if (!cameraActive) return
+    const video = videoRef.current
+    const stream = streamRef.current
+    if (!video || !stream) return
+
+    video.srcObject = stream
+    video.play().catch((err) => {
+      console.error('Camera play error:', err)
+    })
+  }, [cameraActive])
+
   const startCamera = async () => {
     try {
       setSelfieFile(null)
@@ -46,6 +59,9 @@ export default function GalleryPage() {
   }
 
   const stopCamera = () => {
+    if (videoRef.current) {
+      videoRef.current.srcObject = null
+    }
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => track.stop())
       streamRef.current = null
