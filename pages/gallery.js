@@ -2,6 +2,34 @@ import { useState, useRef, useEffect } from 'react'
 import Head from 'next/head'
 import Header from '../components/Header'
 
+async function resizeSelfieForSearch(file, maxWidth = 768, quality = 0.82) {
+  if (!file) return file
+  if (typeof createImageBitmap !== 'function' || typeof document === 'undefined') {
+    return file
+  }
+
+  const bitmap = await createImageBitmap(file)
+  const ratio = Math.min(1, maxWidth / bitmap.width)
+  if (ratio >= 1) return file
+
+  const width = Math.round(bitmap.width * ratio)
+  const height = Math.round(bitmap.height * ratio)
+  const canvas = document.createElement('canvas')
+  canvas.width = width
+  canvas.height = height
+
+  const ctx = canvas.getContext('2d')
+  ctx.drawImage(bitmap, 0, 0, width, height)
+
+  const blob = await new Promise((resolve) => {
+    canvas.toBlob((nextBlob) => resolve(nextBlob), 'image/jpeg', quality)
+  })
+
+  if (!blob) return file
+  const baseName = file.name.replace(/\.[^.]+$/, '') || 'selfie'
+  return new File([blob], `${baseName}-search.jpg`, { type: 'image/jpeg' })
+}
+
 export default function GalleryPage() {
   const [eventId, setEventId] = useState('wedding-2026')
   const [selfieFile, setSelfieFile] = useState(null)
@@ -71,11 +99,17 @@ export default function GalleryPage() {
 
   const capturePhoto = () => {
     if (videoRef.current) {
+      const sourceWidth = videoRef.current.videoWidth || 640
+      const sourceHeight = videoRef.current.videoHeight || 480
+      const maxWidth = 768
+      const ratio = Math.min(1, maxWidth / sourceWidth)
+      const width = Math.round(sourceWidth * ratio)
+      const height = Math.round(sourceHeight * ratio)
       const canvas = document.createElement('canvas')
-      canvas.width = videoRef.current.videoWidth || 640
-      canvas.height = videoRef.current.videoHeight || 480
+      canvas.width = width
+      canvas.height = height
       const ctx = canvas.getContext('2d')
-      ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height)
+      ctx.drawImage(videoRef.current, 0, 0, width, height)
       
       canvas.toBlob((blob) => {
         if (blob) {
@@ -118,9 +152,10 @@ export default function GalleryPage() {
     setSearched(true)
 
     try {
+      const optimizedSelfie = await resizeSelfieForSearch(selfieFile)
       const form = new FormData()
       form.append('eventId', eventId.trim())
-      form.append('selfie', selfieFile)
+      form.append('selfie', optimizedSelfie)
 
       const res = await fetch('/api/search-by-selfie', {
         method: 'POST',

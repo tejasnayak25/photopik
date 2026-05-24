@@ -2,6 +2,7 @@ import { IncomingForm } from 'formidable'
 import fs from 'fs'
 import admin from 'firebase-admin'
 import { isVectorSearchEnabled, searchFacesByManyEmbeddings } from '../../lib/vectorSearch'
+import { extractEmbeddingsFromBuffer } from '../../lib/faceIndexing'
 
 export const config = {
   api: {
@@ -84,7 +85,7 @@ export default async function handler(req, res) {
       return res.status(404).json({ error: `Event '${eventIdField}' not found.` })
     }
 
-    // 2. Generate Embedding for Selfie via HF Space using Gradio Client
+    // 2. Generate embeddings for the selfie via the shared HF helper.
     const HF_SPACE_URL = process.env.HF_SPACE_URL
     if (!HF_SPACE_URL) {
       return res.status(500).json({ error: 'AI processing service is not configured (HF_SPACE_URL missing).' })
@@ -92,16 +93,13 @@ export default async function handler(req, res) {
 
     const filePath = selfie.filepath || selfie.path
     const fileBuffer = fs.readFileSync(filePath)
-    const blob = new Blob([fileBuffer], { type: selfie.mimetype || 'image/jpeg' })
-
-    console.log("Connecting to Gradio Space for selfie embedding...");
-    const { Client } = await import('@gradio/client')
-    const client = await Client.connect(HF_SPACE_URL)
-    const result = await client.predict("/process", {
-      image: blob
+    const extraction = await extractEmbeddingsFromBuffer({
+      buffer: fileBuffer,
+      mimeType: selfie.mimetype || 'image/jpeg',
+      hfSpaceUrl: HF_SPACE_URL,
     })
 
-    const faces = result.data[1] || []
+    const faces = extraction.usableFaces || []
     if (faces.length === 0) {
       return res.status(400).json({ error: 'No face detected in the selfie. Please ensure your face is clearly visible.' })
     }

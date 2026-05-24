@@ -14,7 +14,6 @@ const fs = require('fs')
 const path = require('path')
 const admin = require('firebase-admin')
 const { google } = require('googleapis')
-const { Client } = require('@gradio/client')
 const fetch = require('node-fetch')
 const { createHash } = require('crypto')
 
@@ -141,11 +140,6 @@ function getDriveClient(serviceAccount) {
   return google.drive({ version: 'v3', auth })
 }
 
-function isUsableEmbedding(emb) {
-  if (!Array.isArray(emb) || emb.length === 0) return false
-  return !emb.every((v) => Number(v) === 0)
-}
-
 function getQdrantConfig() {
   const url = process.env.QDRANT_URL
   if (!url) throw new Error('QDRANT_URL env required')
@@ -248,8 +242,7 @@ async function run() {
   }
   const db = admin.firestore()
   const drive = getDriveClient(serviceAccount)
-  const client = await Client.connect(HF_SPACE_URL)
-  const BlobCtor = globalThis.Blob || require('buffer').Blob
+  const { extractEmbeddingsFromBuffer } = await import('../lib/faceIndexing.js')
 
   const checkpointPath = path.isAbsolute(args.checkpointFile)
     ? args.checkpointFile
@@ -336,23 +329,20 @@ async function run() {
 
     try {
       const buffer = await downloadFileBuffer(drive, fileId)
-      const blob = new BlobCtor([buffer], { type: 'image/jpeg' })
+      const extraction = await extractEmbeddingsFromBuffer({
+        buffer,
+        mimeType: 'image/jpeg',
+        hfSpaceUrl: HF_SPACE_URL,
+      })
 
-      const result = await client.predict('/process', { image: blob })
-      const faces = result?.data?.[1] || []
-
-      const usable = []
-      for (const item of faces) {
-        const emb = item?.embedding
-        if (!isUsableEmbedding(emb)) {
-          skippedFaces += 1
-          continue
-        }
-        usable.push({ emb, bbox: item?.bbox || null })
-      }
+      const usable = extraction.usableFaces.map((item) => ({
+        emb: item.embedding,
+        bbox: item.bbox,
+      }))
+      skippedFaces += extraction.skippedFaces
 
       if (args.dryRun) {
-        console.log(`[reembed] image=${imageId} event=${eventId} detected=${faces.length} usable=${usable.length}`)
+        console.log(`[reembed] image=${imageId} event=${eventId} detected=${extraction.detectedFaces} usable=${usable.length}`)
         processedImages += 1
         if (args.resume) {
           processedSet.add(imageId)

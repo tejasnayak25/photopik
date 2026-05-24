@@ -23,6 +23,7 @@
     "googleapis": "172.0.0",
     "next": "13.4.7",
     "node-fetch": "2.6.9",
+    "sharp": "^0.33.5",
     "react": "18.2.0",
     "react-dom": "18.2.0"
   },
